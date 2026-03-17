@@ -93,7 +93,7 @@ async function resolveContents(
 
 // ── Table renderer ──────────────────────────────────────────────────────────
 
-function renderTable(diff: LockfileDiff, origins: Map<string, string>, label: string): void {
+function renderTable(diff: LockfileDiff, oldOrigins: Map<string, string>, newOrigins: Map<string, string>, label: string): void {
   const { added, removed, updated } = diff;
   const total = added.length + removed.length + updated.length;
 
@@ -120,7 +120,7 @@ function renderTable(diff: LockfileDiff, origins: Map<string, string>, label: st
     const rows = updated
       .map((u) => {
         const segs = parseKeySegments(u.name);
-        return { ...u, leaf: segs[segs.length - 1], via: origins.get(u.name) ?? null };
+        return { ...u, leaf: segs[segs.length - 1], via: newOrigins.get(u.name) ?? null };
       })
       .sort((x, y) => x.leaf.localeCompare(y.leaf) || (x.via ?? "").localeCompare(y.via ?? ""));
     const nameW = Math.max(...rows.map((r) => r.leaf.length));
@@ -143,7 +143,7 @@ function renderTable(diff: LockfileDiff, origins: Map<string, string>, label: st
     const rows = added
       .map((p) => {
         const segs = parseKeySegments(p.name);
-        return { ...p, leaf: segs[segs.length - 1], via: origins.get(p.name) ?? null };
+        return { ...p, leaf: segs[segs.length - 1], via: newOrigins.get(p.name) ?? null };
       })
       .sort((x, y) => x.leaf.localeCompare(y.leaf) || (x.via ?? "").localeCompare(y.via ?? ""));
     const nameW = Math.max(...rows.map((r) => r.leaf.length));
@@ -161,7 +161,7 @@ function renderTable(diff: LockfileDiff, origins: Map<string, string>, label: st
     const rows = removed
       .map((p) => {
         const segs = parseKeySegments(p.name);
-        return { ...p, leaf: segs[segs.length - 1], via: origins.get(p.name) ?? null };
+        return { ...p, leaf: segs[segs.length - 1], via: oldOrigins.get(p.name) ?? null };
       })
       .sort((x, y) => x.leaf.localeCompare(y.leaf) || (x.via ?? "").localeCompare(y.via ?? ""));
     const nameW = Math.max(...rows.map((r) => r.leaf.length));
@@ -251,8 +251,7 @@ async function main() {
   const diff = diffPackages(oldPkgs, newPkgs);
   const oldOrigins = oldData ? buildOriginMap(oldData) : new Map<string, string>();
   const newOrigins = newData ? buildOriginMap(newData) : new Map<string, string>();
-  const origins = new Map([...oldOrigins, ...newOrigins]);
-  renderTable(diff, origins, label);
+  renderTable(diff, oldOrigins, newOrigins, label);
 }
 
 main().catch((err) => {

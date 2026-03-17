@@ -1015,6 +1015,71 @@ describe("integration: bdiff in git repos", () => {
     expect(stdout).toContain("3 updated");
   });
 
+  test("updated packages show new origin, not stale removed origin", () => {
+    // Old lockfile: charts-embed-dom is a direct dep, bson is its transitive dep
+    const oldLock = `{
+      "lockfileVersion": 1,
+      "workspaces": {
+        "": {
+          "name": "app",
+          "dependencies": {
+            "react": "^18.0.0",
+            "@mongodb-js/charts-embed-dom": "^3.0.0",
+          },
+        },
+      },
+      "packages": {
+        "react": ["react@18.2.0", "", {}, "sha512-a=="],
+        "@mongodb-js/charts-embed-dom": ["@mongodb-js/charts-embed-dom@3.3.1", "", { "dependencies": { "bson": "^5.0.0", "debug": "^2.0.0" } }, "sha512-b=="],
+        "bson": ["bson@5.5.1", "", {}, "sha512-c=="],
+        "debug": ["debug@2.6.9", "", {}, "sha512-d=="],
+      },
+    }`;
+    writeLock(oldLock);
+    git("add", "bun.lock");
+    git("commit", "-m", "with charts-embed-dom");
+
+    // New lockfile: charts-embed-dom removed, bson now comes from mongoose
+    const newLock = `{
+      "lockfileVersion": 1,
+      "workspaces": {
+        "": {
+          "name": "app",
+          "dependencies": {
+            "react": "^18.0.0",
+            "mongoose": "^8.0.0",
+          },
+        },
+      },
+      "packages": {
+        "react": ["react@18.2.0", "", {}, "sha512-a=="],
+        "mongoose": ["mongoose@8.0.0", "", { "dependencies": { "bson": "^7.0.0" } }, "sha512-e=="],
+        "bson": ["bson@7.2.0", "", {}, "sha512-f=="],
+      },
+    }`;
+    writeLock(newLock);
+
+    const { stdout, exitCode } = runBdiff();
+    expect(exitCode).toBe(0);
+
+    // bson is updated — its "via" should be mongoose (new origin), not charts-embed-dom
+    expect(stdout).toContain("Updated");
+    expect(stdout).toContain("bson");
+
+    // Split output into sections to check origins per section
+    const updatedSection = stdout.split("Added")[0].split("Updated")[1] ?? "";
+    const removedSection = stdout.split("Removed")[1] ?? "";
+
+    // Updated bson should show "via mongoose", NOT "via @mongodb-js/charts-embed-dom"
+    expect(updatedSection).toContain("via mongoose");
+    expect(updatedSection).not.toContain("via @mongodb-js/charts-embed-dom");
+
+    // Removed section should show charts-embed-dom and debug with old origin
+    expect(removedSection).toContain("@mongodb-js/charts-embed-dom");
+    expect(removedSection).toContain("debug");
+    expect(removedSection).toContain("via @mongodb-js/charts-embed-dom");
+  });
+
   test("--help shows usage", () => {
     const { stdout, exitCode } = runBdiff("--help");
     expect(exitCode).toBe(0);
