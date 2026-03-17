@@ -1,0 +1,21 @@
+{
+  "name": "bdiff",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "bdiff": "src/index.ts"
+  },
+  "scripts": {
+    "dev": "bun run src/index.ts",
+    "test": "bun test",
+    "lint": "eslint src/",
+    "typecheck": "tsc"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/bun": "latest",
+    "eslint": "^10.0.3",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.57.1"
+  }
+}
