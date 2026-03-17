@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeAll, afterAll } from "bun:test";
-import { parseJsonc, extractPackages, diffPackages } from "./parse";
+import { parseJsonc, extractPackages, diffPackages, parseKeySegments, buildOriginMap } from "./parse";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -598,6 +598,177 @@ describe("end-to-end lockfile parsing", () => {
     const lock = `{ "lockfileVersion": 1, "packages": {} }`;
     const pkgs = extractPackages(parseJsonc(lock));
     expect(pkgs.size).toBe(0);
+  });
+});
+
+// ── parseKeySegments ────────────────────────────────────────────────────────
+
+describe("parseKeySegments", () => {
+  test("simple package name", () => {
+    expect(parseKeySegments("react")).toEqual(["react"]);
+  });
+
+  test("scoped package name", () => {
+    expect(parseKeySegments("@types/react")).toEqual(["@types/react"]);
+  });
+
+  test("unscoped transitive path", () => {
+    expect(parseKeySegments("mongodb/bson")).toEqual(["mongodb", "bson"]);
+  });
+
+  test("scoped root with transitive deps", () => {
+    expect(parseKeySegments("@mapbox/node-pre-gyp/node-fetch/whatwg-url")).toEqual([
+      "@mapbox/node-pre-gyp",
+      "node-fetch",
+      "whatwg-url",
+    ]);
+  });
+
+  test("scoped leaf in transitive path", () => {
+    expect(parseKeySegments("express/@types/body-parser")).toEqual([
+      "express",
+      "@types/body-parser",
+    ]);
+  });
+
+  test("scoped root and scoped leaf", () => {
+    expect(parseKeySegments("@nestjs/core/@nestjs/common")).toEqual([
+      "@nestjs/core",
+      "@nestjs/common",
+    ]);
+  });
+
+  test("deep nesting", () => {
+    expect(parseKeySegments("a/b/c/d")).toEqual(["a", "b", "c", "d"]);
+  });
+});
+
+// ── buildOriginMap ──────────────────────────────────────────────────────────
+
+describe("buildOriginMap", () => {
+  test("direct deps are not in the map", () => {
+    const data = parseJsonc(LOCK_MINIMAL);
+    const origins = buildOriginMap(data);
+    expect(origins.has("react")).toBe(false);
+    expect(origins.has("react-dom")).toBe(false);
+  });
+
+  test("traces single-level transitive dep to direct dep", () => {
+    const data = parseJsonc(LOCK_MINIMAL);
+    const origins = buildOriginMap(data);
+    // loose-envify is required by react and react-dom
+    const origin = origins.get("loose-envify");
+    expect(origin === "react" || origin === "react-dom").toBe(true);
+    // scheduler is required by react-dom
+    expect(origins.get("scheduler")).toBe("react-dom");
+  });
+
+  test("traces multi-level transitive dep to direct dep", () => {
+    const data = parseJsonc(LOCK_MINIMAL);
+    const origins = buildOriginMap(data);
+    // js-tokens is required by loose-envify, which is required by react/react-dom
+    const origin = origins.get("js-tokens");
+    expect(origin === "react" || origin === "react-dom").toBe(true);
+  });
+
+  test("traces scoped transitive deps", () => {
+    const data = parseJsonc(LOCK_SCOPED);
+    const origins = buildOriginMap(data);
+    // @types/prop-types is required by @types/react
+    expect(origins.get("@types/prop-types")).toBe("@types/react");
+    // csstype is required by @types/react
+    expect(origins.get("csstype")).toBe("@types/react");
+  });
+
+  test("traces nested key paths to direct dep", () => {
+    // Simulate a lockfile with nested resolution paths
+    const lockData = parseJsonc(`{
+      "lockfileVersion": 1,
+      "workspaces": {
+        "": {
+          "name": "my-app",
+          "dependencies": {
+            "mongodb": "^6.0.0",
+          },
+        },
+      },
+      "packages": {
+        "mongodb": ["mongodb@6.0.0", "", { "dependencies": { "mongodb-connection-string-url": "^3.0.0" } }, "sha512-a=="],
+        "mongodb-connection-string-url": ["mongodb-connection-string-url@3.0.0", "", { "dependencies": { "whatwg-url": "^14.0.0" } }, "sha512-b=="],
+        "mongodb-connection-string-url/whatwg-url": ["whatwg-url@14.0.0", "", { "dependencies": { "tr46": "^5.0.0" } }, "sha512-c=="],
+        "mongodb-connection-string-url/whatwg-url/tr46": ["tr46@5.0.0", "", {}, "sha512-d=="],
+      },
+    }`);
+    const origins = buildOriginMap(lockData);
+    // All should trace back to mongodb
+    expect(origins.get("mongodb-connection-string-url")).toBe("mongodb");
+    expect(origins.get("mongodb-connection-string-url/whatwg-url")).toBe("mongodb");
+    expect(origins.get("mongodb-connection-string-url/whatwg-url/tr46")).toBe("mongodb");
+  });
+
+  test("handles monorepo with multiple workspaces", () => {
+    const data = parseJsonc(LOCK_MONOREPO);
+    const origins = buildOriginMap(data);
+    // loose-envify is a transitive dep of react
+    expect(origins.get("loose-envify")).toBe("react");
+    // Direct deps should not be in the map
+    expect(origins.has("react")).toBe(false);
+    expect(origins.has("turbo")).toBe(false);
+    expect(origins.has("typescript")).toBe(false);
+  });
+
+  test("handles devDependencies as direct deps", () => {
+    const data = parseJsonc(LOCK_SCOPED);
+    const origins = buildOriginMap(data);
+    // @types/react, @babel/core, @emotion/react are devDeps → not in map
+    expect(origins.has("@types/react")).toBe(false);
+    expect(origins.has("@babel/core")).toBe(false);
+    expect(origins.has("@emotion/react")).toBe(false);
+  });
+
+  test("returns empty map for missing/null/undefined input", () => {
+    expect(buildOriginMap(null)).toEqual(new Map());
+    expect(buildOriginMap(undefined)).toEqual(new Map());
+    expect(buildOriginMap({})).toEqual(new Map());
+    expect(buildOriginMap({ packages: null })).toEqual(new Map());
+  });
+
+  test("returns empty map when all packages are direct deps", () => {
+    const lockData = parseJsonc(`{
+      "lockfileVersion": 1,
+      "workspaces": {
+        "": {
+          "name": "app",
+          "dependencies": { "react": "^18.0.0", "lodash": "^4.0.0" },
+        },
+      },
+      "packages": {
+        "react": ["react@18.2.0", "", {}, "sha512-a=="],
+        "lodash": ["lodash@4.17.21", "", {}, "sha512-b=="],
+      },
+    }`);
+    const origins = buildOriginMap(lockData);
+    expect(origins.size).toBe(0);
+  });
+
+  test("handles circular dependencies without infinite loop", () => {
+    const lockData = parseJsonc(`{
+      "lockfileVersion": 1,
+      "workspaces": {
+        "": {
+          "name": "app",
+          "dependencies": { "a": "^1.0.0" },
+        },
+      },
+      "packages": {
+        "a": ["a@1.0.0", "", { "dependencies": { "b": "^1.0.0" } }, "sha512-a=="],
+        "b": ["b@1.0.0", "", { "dependencies": { "c": "^1.0.0" } }, "sha512-b=="],
+        "c": ["c@1.0.0", "", { "dependencies": { "b": "^1.0.0" } }, "sha512-c=="],
+      },
+    }`);
+    const origins = buildOriginMap(lockData);
+    expect(origins.get("b")).toBe("a");
+    expect(origins.get("c")).toBe("a");
   });
 });
 

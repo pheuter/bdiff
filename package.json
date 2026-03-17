@@ -2,6 +2,7 @@
   "name": "bdiff",
   "version": "0.1.0",
   "type": "module",
+  "license": "MIT",
   "bin": {
     "bdiff": "src/index.ts"
   },

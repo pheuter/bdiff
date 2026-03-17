@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import { parseArgs } from "node:util";
-import { parseJsonc, extractPackages, diffPackages } from "./parse";
+import { parseJsonc, extractPackages, diffPackages, parseKeySegments, buildOriginMap } from "./parse";
 import type { LockfileDiff } from "./parse";
 
 // ── ANSI ────────────────────────────────────────────────────────────────────
@@ -93,7 +93,7 @@ async function resolveContents(
 
 // ── Table renderer ──────────────────────────────────────────────────────────
 
-function renderTable(diff: LockfileDiff, label: string): void {
+function renderTable(diff: LockfileDiff, origins: Map<string, string>, label: string): void {
   const { added, removed, updated } = diff;
   const total = added.length + removed.length + updated.length;
 
@@ -114,24 +114,24 @@ function renderTable(diff: LockfileDiff, label: string): void {
   console.log(`  ${parts.join(a.dim("  \u00b7  "))}`);
   console.log();
 
-  // Compute column widths
-  const allNames = [
-    ...updated.map((u) => u.name),
-    ...added.map((p) => p.name),
-    ...removed.map((p) => p.name),
-  ];
-  const maxName = Math.min(50, Math.max(...allNames.map((n) => n.length)));
-
   // Updated
   if (updated.length > 0) {
     console.log(`  ${a.bold("Updated")}`);
-    const maxFrom = Math.max(...updated.map((u) => u.from.length));
+    const rows = updated
+      .map((u) => {
+        const segs = parseKeySegments(u.name);
+        return { ...u, leaf: segs[segs.length - 1], via: origins.get(u.name) ?? null };
+      })
+      .sort((x, y) => x.leaf.localeCompare(y.leaf) || (x.via ?? "").localeCompare(y.via ?? ""));
+    const nameW = Math.max(...rows.map((r) => r.leaf.length));
+    const fromW = Math.max(...rows.map((r) => r.from.length));
 
-    for (const u of updated) {
-      const name = u.name.padEnd(maxName + 2);
-      const from = u.from.padStart(maxFrom);
+    for (const r of rows) {
+      const name = r.leaf.padEnd(nameW + 2);
+      const from = r.from.padStart(fromW);
+      const via = r.via ? `  ${a.dim(`via ${r.via}`)}` : "";
       console.log(
-        `  ${a.dim(name)}${a.red(from)}  ${a.dim("\u2192")}  ${a.green(u.to)}`
+        `  ${name}${a.red(from)}  ${a.dim("\u2192")}  ${a.green(r.to)}${via}`
       );
     }
     console.log();
@@ -140,9 +140,17 @@ function renderTable(diff: LockfileDiff, label: string): void {
   // Added
   if (added.length > 0) {
     console.log(`  ${a.bold(a.green("Added"))}`);
-    for (const p of added) {
-      const name = p.name.padEnd(maxName + 2);
-      console.log(`  ${a.dim(name)}${a.green(p.version)}`);
+    const rows = added
+      .map((p) => {
+        const segs = parseKeySegments(p.name);
+        return { ...p, leaf: segs[segs.length - 1], via: origins.get(p.name) ?? null };
+      })
+      .sort((x, y) => x.leaf.localeCompare(y.leaf) || (x.via ?? "").localeCompare(y.via ?? ""));
+    const nameW = Math.max(...rows.map((r) => r.leaf.length));
+    for (const r of rows) {
+      const name = r.leaf.padEnd(nameW + 2);
+      const via = r.via ? `  ${a.dim(`via ${r.via}`)}` : "";
+      console.log(`  ${name}${a.green(r.version)}${via}`);
     }
     console.log();
   }
@@ -150,9 +158,17 @@ function renderTable(diff: LockfileDiff, label: string): void {
   // Removed
   if (removed.length > 0) {
     console.log(`  ${a.bold(a.red("Removed"))}`);
-    for (const p of removed) {
-      const name = p.name.padEnd(maxName + 2);
-      console.log(`  ${a.dim(name)}${a.red(p.version)}`);
+    const rows = removed
+      .map((p) => {
+        const segs = parseKeySegments(p.name);
+        return { ...p, leaf: segs[segs.length - 1], via: origins.get(p.name) ?? null };
+      })
+      .sort((x, y) => x.leaf.localeCompare(y.leaf) || (x.via ?? "").localeCompare(y.via ?? ""));
+    const nameW = Math.max(...rows.map((r) => r.leaf.length));
+    for (const r of rows) {
+      const name = r.leaf.padEnd(nameW + 2);
+      const via = r.via ? `  ${a.dim(`via ${r.via}`)}` : "";
+      console.log(`  ${name}${a.red(r.version)}${via}`);
     }
     console.log();
   }
@@ -207,25 +223,36 @@ async function main() {
     process.exit(1);
   }
 
+  let oldData: unknown = null;
+  let newData: unknown = null;
   let oldPkgs = new Map<string, string>();
   let newPkgs = new Map<string, string>();
 
   try {
-    if (oldContent) oldPkgs = extractPackages(parseJsonc(oldContent));
+    if (oldContent) {
+      oldData = parseJsonc(oldContent);
+      oldPkgs = extractPackages(oldData);
+    }
   } catch (e) {
     console.error(a.red(`  Failed to parse old bun.lock: ${e}`));
     process.exit(1);
   }
 
   try {
-    if (newContent) newPkgs = extractPackages(parseJsonc(newContent));
+    if (newContent) {
+      newData = parseJsonc(newContent);
+      newPkgs = extractPackages(newData);
+    }
   } catch (e) {
     console.error(a.red(`  Failed to parse new bun.lock: ${e}`));
     process.exit(1);
   }
 
   const diff = diffPackages(oldPkgs, newPkgs);
-  renderTable(diff, label);
+  const oldOrigins = oldData ? buildOriginMap(oldData) : new Map<string, string>();
+  const newOrigins = newData ? buildOriginMap(newData) : new Map<string, string>();
+  const origins = new Map([...oldOrigins, ...newOrigins]);
+  renderTable(diff, origins, label);
 }
 
 main().catch((err) => {
